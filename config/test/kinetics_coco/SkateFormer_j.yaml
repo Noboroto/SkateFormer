@@ -1,0 +1,43 @@
+seed: 1
+num_worker: 8
+work_dir: ./work_dir/kinetics/coco/SkateFormer_j/
+
+phase: test
+
+# feeder - converted from OpenPose-18 via st-gcn/tools/convert_kinetics_openpose_to_coco.py
+feeder: feeders.feeder_kinetics_coco.Feeder
+test_feeder_args:
+  data_path: ./converted/kinetics-skeleton/kinetics_coco17_trainval.npz
+  split: test
+  window_size: 64
+  p_interval: [0.95]
+  thres: 64
+  uniform: True
+  partition: False
+  debug: False
+
+# model
+model: model.SkateFormer.SkateFormer_
+model_args:
+  num_classes: 400
+  num_people: 2
+  num_points: 17
+  kernel_size: 7
+  num_heads: 32
+  attn_drop: 0.5
+  head_drop: 0.0
+  rel: True
+  drop_path: 0.2
+  type_1_size: [8, 8]
+  type_2_size: [8, 12]
+  type_3_size: [8, 8]
+  type_4_size: [8, 12]
+  mlp_ratio: 4.0
+  index_t: True
+
+# evaluation settings
+device: [0]
+test_batch_size: 64
+
+# specify weights file to load for evaluation
+weights: ./work_dir/kinetics/coco/SkateFormer_j/best_model.pt
