@@ -18,15 +18,17 @@ def valid_crop_resize(data_numpy, valid_frame_num, p_interval, window, thres):
     if len(p_interval) == 1:
         p = p_interval[0]
         bias = int((1 - p) * valid_size / 2)
-        data = data_numpy[:, begin + bias:end - bias, :, :]  # center_crop
+        data = data_numpy[:, begin + bias : end - bias, :, :]  # center_crop
         cropped_length = data.shape[1]
         c_b = begin + bias
         c_e = end - bias
     else:
         p = np.random.rand(1) * (p_interval[1] - p_interval[0]) + p_interval[0]
-        cropped_length = np.minimum(np.maximum(int(np.floor(valid_size * p)), thres), valid_size)  # constraint cropped_length lower bound as thres
+        cropped_length = np.minimum(
+            np.maximum(int(np.floor(valid_size * p)), thres), valid_size
+        )  # constraint cropped_length lower bound as thres
         bias = np.random.randint(0, valid_size - cropped_length + 1)
-        data = data_numpy[:, begin + bias:begin + bias + cropped_length, :, :]
+        data = data_numpy[:, begin + bias : begin + bias + cropped_length, :, :]
         if data.shape[1] == 0:
             print(cropped_length, bias, valid_size)
         c_b = begin + bias
@@ -35,10 +37,12 @@ def valid_crop_resize(data_numpy, valid_frame_num, p_interval, window, thres):
     # resize
     data = torch.tensor(data, dtype=torch.float)  # C, crop_t, V, M
     data = data.permute(2, 3, 0, 1).contiguous().view(V * M, C, cropped_length)  # V*M, C, crop_t
-    data = F.interpolate(data, size=window, mode='linear', align_corners=False)  # V*M, C, T
+    data = F.interpolate(data, size=window, mode="linear", align_corners=False)  # V*M, C, T
     data = data.contiguous().view(V, M, C, window).permute(2, 3, 0, 1).contiguous().numpy()
     index_t = torch.arange(start=c_b, end=c_e, dtype=torch.float)
-    index_t = F.interpolate(index_t[None, None, :], size=window, mode='linear', align_corners=False).squeeze()
+    index_t = F.interpolate(
+        index_t[None, None, :], size=window, mode="linear", align_corners=False
+    ).squeeze()
     index_t = 2 * index_t / valid_size - 1
     return data, index_t.numpy()
 
@@ -50,6 +54,11 @@ def valid_crop_uniform(data_numpy, valid_frame_num, p_interval, window, thres):
     end = valid_frame_num
     valid_size = end - begin
 
+    # Handle edge case where no valid frames exist
+    if valid_size <= 0:
+        valid_size = T
+        end = T
+
     # crop
     if len(p_interval) == 1:
         p = p_interval[0]
@@ -59,8 +68,7 @@ def valid_crop_uniform(data_numpy, valid_frame_num, p_interval, window, thres):
         if cropped_length < window:
             inds = np.arange(cropped_length)
         else:
-            bids = np.array(
-                [i * cropped_length // window for i in range(window + 1)])
+            bids = np.array([i * cropped_length // window for i in range(window + 1)])
             bst = bids[:window]
             inds = bst
 
@@ -69,8 +77,9 @@ def valid_crop_uniform(data_numpy, valid_frame_num, p_interval, window, thres):
 
     else:
         p = np.random.rand(1) * (p_interval[1] - p_interval[0]) + p_interval[0]
-        cropped_length = np.minimum(np.maximum(int(np.floor(valid_size * p)), thres),
-                                    valid_size)  # constraint cropped_length lower bound as 64
+        cropped_length = np.minimum(
+            np.maximum(int(np.floor(valid_size * p)), thres), valid_size
+        )  # constraint cropped_length lower bound as 64
         bias = np.random.randint(0, valid_size - cropped_length + 1)
 
         if cropped_length < window:
@@ -100,8 +109,10 @@ def valid_crop_uniform(data_numpy, valid_frame_num, p_interval, window, thres):
     data = data.permute(2, 3, 0, 1).contiguous().view(V * M, C, len(inds))  # V*M, C, crop_t
 
     if len(inds) != window:
-        data = F.interpolate(data, size=window, mode='linear', align_corners=False)  # V*M, C, T
-        index_t = F.interpolate(index_t[None, None, :], size=window, mode='linear', align_corners=False).squeeze()
+        data = F.interpolate(data, size=window, mode="linear", align_corners=False)  # V*M, C, T
+        index_t = F.interpolate(
+            index_t[None, None, :], size=window, mode="linear", align_corners=False
+        ).squeeze()
 
     data = data.contiguous().view(V, M, C, window).permute(2, 3, 0, 1).contiguous().numpy()
     index_t = 2 * index_t / valid_size - 1
@@ -116,8 +127,55 @@ def scale(data_numpy, scale=0.2, p=0.5):
         return data_numpy.copy()
 
 
-''' AimCLR '''
-transform_order = {'ntu': [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 16, 17, 18, 19, 12, 13, 14, 15, 20, 23, 24, 21, 22]}
+""" AimCLR """
+transform_order = {
+    "ntu": [
+        0,
+        1,
+        2,
+        3,
+        8,
+        9,
+        10,
+        11,
+        4,
+        5,
+        6,
+        7,
+        16,
+        17,
+        18,
+        19,
+        12,
+        13,
+        14,
+        15,
+        20,
+        23,
+        24,
+        21,
+        22,
+    ],
+    "coco17": [
+        0,
+        2,
+        1,
+        4,
+        3,
+        6,
+        5,
+        8,
+        7,
+        10,
+        9,
+        12,
+        11,
+        14,
+        13,
+        16,
+        15,
+    ],  # Swap left/right for horizontal flip
+}
 
 
 def subtract(data_numpy, p=0.5):
@@ -143,9 +201,12 @@ def temporal_flip(data_numpy, index_t, p=0.5):
         return data_numpy.copy(), index_t.copy()
 
 
-def spatial_flip(data_numpy, p=0.5):
+def spatial_flip(data_numpy, p=0.5, num_points=25):
     if random.random() < p:
-        index = transform_order['ntu']
+        if num_points == 17:
+            index = transform_order["coco17"]
+        else:
+            index = transform_order["ntu"]
         return data_numpy[:, :, index, :]
     else:
         return data_numpy.copy()
@@ -167,19 +228,31 @@ def rotate(data_numpy, axis=None, angle=None, p=0.5):
         angle = math.radians(angle_next)
         # x
         if axis_next == 0:
-            R = np.array([[1, 0, 0],
-                          [0, math.cos(angle), math.sin(angle)],
-                          [0, -math.sin(angle), math.cos(angle)]])
+            R = np.array(
+                [
+                    [1, 0, 0],
+                    [0, math.cos(angle), math.sin(angle)],
+                    [0, -math.sin(angle), math.cos(angle)],
+                ]
+            )
         # y
         if axis_next == 1:
-            R = np.array([[math.cos(angle), 0, -math.sin(angle)],
-                          [0, 1, 0],
-                          [math.sin(angle), 0, math.cos(angle)]])
+            R = np.array(
+                [
+                    [math.cos(angle), 0, -math.sin(angle)],
+                    [0, 1, 0],
+                    [math.sin(angle), 0, math.cos(angle)],
+                ]
+            )
         # z
         if axis_next == 2:
-            R = np.array([[math.cos(angle), math.sin(angle), 0],
-                          [-math.sin(angle), math.cos(angle), 0],
-                          [0, 0, 1]])
+            R = np.array(
+                [
+                    [math.cos(angle), math.sin(angle), 0],
+                    [-math.sin(angle), math.cos(angle), 0],
+                    [0, 0, 1],
+                ]
+            )
         R = R.transpose()
         temp = np.dot(temp.transpose([1, 2, 3, 0]), R)
         temp = temp.transpose(3, 0, 1, 2)
@@ -194,15 +267,23 @@ def shear(data_numpy, s1=None, s2=None, p=0.5):
         if s1 != None:
             s1_list = s1
         else:
-            s1_list = [random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5)]
+            s1_list = [
+                random.uniform(-0.5, 0.5),
+                random.uniform(-0.5, 0.5),
+                random.uniform(-0.5, 0.5),
+            ]
         if s2 != None:
             s2_list = s2
         else:
-            s2_list = [random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5)]
+            s2_list = [
+                random.uniform(-0.5, 0.5),
+                random.uniform(-0.5, 0.5),
+                random.uniform(-0.5, 0.5),
+            ]
 
-        R = np.array([[1, s1_list[0], s2_list[0]],
-                      [s1_list[1], 1, s2_list[1]],
-                      [s1_list[2], s2_list[2], 1]])
+        R = np.array(
+            [[1, s1_list[0], s2_list[0]], [s1_list[1], 1, s2_list[1]], [s1_list[2], s2_list[2], 1]]
+        )
         R = R.transpose()
         temp = np.dot(temp.transpose([1, 2, 3, 0]), R)
         temp = temp.transpose(3, 0, 1, 2)
@@ -294,7 +375,9 @@ class GaussianBlurConv(nn.Module):
         x = torch.from_numpy(x).double()
         if prob < self.p:
             x = x.permute(3, 0, 2, 1)
-            x = F.conv2d(x, self.weight, padding=(0, int((self.kernel - 1) / 2)), groups=self.channels)
+            x = F.conv2d(
+                x, self.weight, padding=(0, int((self.kernel - 1) / 2)), groups=self.channels
+            )
             x = x.permute(1, -1, -2, 0)
 
         return x.numpy()
@@ -305,22 +388,24 @@ def gaussian_filter(data_numpy, kernel=15, sig_list=[0.1, 2], p=0.5):
     return g(data_numpy)
 
 
-''' Skeleton AdaIN '''
-def skeleton_adain_bone_length(input, ref): # C T V M
+""" Skeleton AdaIN """
+
+
+def skeleton_adain_bone_length(input, ref):  # C T V M
     eps = 1e-5
     center = 1
     ref_c = ref[:, :, center, :]
 
     # joint to bone (joint2bone)
     j2b = joint2bone()
-    bone_i = j2b(input) # C T V M
+    bone_i = j2b(input)  # C T V M
     bone_r = j2b(ref)
 
-    bone_length_i = np.linalg.norm(bone_i, axis=0) # T V M
+    bone_length_i = np.linalg.norm(bone_i, axis=0)  # T V M
     bone_length_r = np.linalg.norm(bone_r, axis=0)
 
-    bone_length_scale = (bone_length_r + eps) / (bone_length_i + eps) # T V M
-    bone_length_scale = np.expand_dims(bone_length_scale, axis=0) # 1 T V M
+    bone_length_scale = (bone_length_r + eps) / (bone_length_i + eps)  # T V M
+    bone_length_scale = np.expand_dims(bone_length_scale, axis=0)  # 1 T V M
 
     bone_i = bone_i * bone_length_scale
 
@@ -333,9 +418,33 @@ def skeleton_adain_bone_length(input, ref): # C T V M
 class joint2bone(nn.Module):
     def __init__(self):
         super(joint2bone, self).__init__()
-        self.pairs = [(0, 1), (1, 1), (2, 20), (3, 2), (4, 20), (5, 4), (6, 5), (7, 6), (8, 20), (9, 8),
-                      (10, 9), (11, 10), (12, 0), (13, 12), (14, 13), (15, 14), (16, 0), (17, 16), (18, 17),
-                      (19, 18), (20, 1), (21, 7), (22, 7), (23, 11), (24, 11)]
+        self.pairs = [
+            (0, 1),
+            (1, 1),
+            (2, 20),
+            (3, 2),
+            (4, 20),
+            (5, 4),
+            (6, 5),
+            (7, 6),
+            (8, 20),
+            (9, 8),
+            (10, 9),
+            (11, 10),
+            (12, 0),
+            (13, 12),
+            (14, 13),
+            (15, 14),
+            (16, 0),
+            (17, 16),
+            (18, 17),
+            (19, 18),
+            (20, 1),
+            (21, 7),
+            (22, 7),
+            (23, 11),
+            (24, 11),
+        ]
 
     def __call__(self, joint):
         bone = np.zeros_like(joint)
@@ -372,8 +481,9 @@ class bone2joint(nn.Module):
             joint[:, :, v1, :] = bone[:, :, v1, :] + joint[:, :, v2, :]
         return joint
 
-def to_motion(input): # C T V M
+
+def to_motion(input):  # C T V M
     C, T, V, M = input.shape
     motion = np.zeros_like(input)
-    motion[:, :T - 1] = np.diff(input, axis=1)
+    motion[:, : T - 1] = np.diff(input, axis=1)
     return motion

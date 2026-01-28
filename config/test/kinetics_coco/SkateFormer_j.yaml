@@ -4,10 +4,10 @@ work_dir: ./work_dir/kinetics/coco/SkateFormer_j/
 
 phase: test
 
-# feeder - converted from OpenPose-18 via st-gcn/tools/convert_kinetics_openpose_to_coco.py
+# feeder - converted from OpenPose-18 via tools/convert_kinetics_openpose_to_coco.py
 feeder: feeders.feeder_kinetics_coco.Feeder
 test_feeder_args:
-  data_path: ./converted/kinetics-skeleton/kinetics_coco17_trainval.npz
+  data_path: ./converted/kinetics-skeleton
   split: test
   window_size: 64
   p_interval: [0.95]

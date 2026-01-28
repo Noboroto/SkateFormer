@@ -1,13 +1,13 @@
 seed: 1
-num_worker: 8
+num_worker: 2  # Balance between memory and performance with lazy loading
 work_dir: ./work_dir/kinetics/coco/SkateFormer_j/
 
 phase: train
 
-# feeder - converted from OpenPose-18 via st-gcn/tools/convert_kinetics_openpose_to_coco.py
+# feeder - converted from OpenPose-18 via tools/convert_kinetics_openpose_to_coco.py
 feeder: feeders.feeder_kinetics_coco.Feeder
 train_feeder_args:
-  data_path: ./converted/kinetics-skeleton/kinetics_coco17_trainval.npz
+  data_path: /app/converted/kinetics-skeleton
   split: train
   debug: False
   window_size: 64
@@ -18,9 +18,11 @@ train_feeder_args:
   thres: 64
   uniform: True
   partition: False
+  max_shards: -1  # Load all shards with lazy loading
+  lazy_load: True  # Enable lazy loading to avoid OOM
 
 test_feeder_args:
-  data_path: ./converted/kinetics-skeleton/kinetics_coco17_trainval.npz
+  data_path: /app/converted/kinetics-skeleton
   split: test
   window_size: 64
   p_interval: [0.95]
@@ -41,10 +43,10 @@ model_args:
   head_drop: 0.0
   rel: True
   drop_path: 0.2
-  type_1_size: [8, 8]
-  type_2_size: [8, 12]
-  type_3_size: [8, 8]
-  type_4_size: [8, 12]
+  type_1_size: [8, 17]
+  type_2_size: [8, 17]
+  type_3_size: [8, 17]
+  type_4_size: [8, 17]
   mlp_ratio: 4.0
   index_t: True
 
@@ -60,8 +62,8 @@ warm_up_epoch: 25
 
 # training
 device: [0]
-batch_size: 128
-test_batch_size: 128
+batch_size: 20
+test_batch_size: 20
 num_epoch: 300
 nesterov: True
 grad_clip: True
