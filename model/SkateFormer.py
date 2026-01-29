@@ -1,7 +1,5 @@
-from typing import Type, Tuple, Optional, Set, List, Union
 
 import math
-import numpy as np
 import torch
 import torch.nn as nn
 from timm.layers import trunc_normal_, Mlp, DropPath
@@ -618,10 +616,10 @@ class SkateFormer(nn.Module):
         if self.index_t:
             te = torch.zeros(B, T, self.embed_dim).to(output.device)  # B, T, C
             div_term = torch.exp(
-                (
+                
                     torch.arange(0, self.embed_dim, 2, dtype=torch.float)
                     * -(math.log(10000.0) / self.embed_dim)
-                )
+                
             ).to(output.device)
             te[:, :, 0::2] = torch.sin(index_t.unsqueeze(-1).float() * div_term)
             te[:, :, 1::2] = torch.cos(index_t.unsqueeze(-1).float() * div_term)

@@ -81,12 +81,14 @@ class Feeder(Dataset):
         self.num_points = num_points
         self.max_shards = max_shards
         self.lazy_load = lazy_load
+        self.max_cache_shards = 8
 
         # Lazy loading state
         self.shard_files = []
-        self.shard_indices = []  # (shard_idx, local_idx) for each sample
-        self.shard_cache = {}  # Cache for loaded shards
-        self.x_key = None  # Set in load_data for sharded datasets
+        self.shard_indices = []
+        self.shard_cache = {}
+        self.shard_access_order = []
+        self.x_key = None
         self.y_key = None
 
         self.load_data()
@@ -97,7 +99,7 @@ class Feeder(Dataset):
             # (N, T, M*V*C)
             N, T, D = x.shape
             expected = self.num_people * self.num_points * 3
-            if D != expected:
+            if expected != D:
                 raise ValueError(f"Expected last dim {expected}, got {D}")
             x = x.reshape(N, T, self.num_people, self.num_points, 3)
             return x.transpose(0, 4, 1, 3, 2)
@@ -210,30 +212,39 @@ class Feeder(Dataset):
             if self.lazy_load:
                 self.shard_indices = self.shard_indices[:200]
 
+        # Initialize sample_name for evaluation tracking
+        if self.split == "train":
+            self.sample_name = ["train_" + str(i) for i in range(len(self.label))]
+        elif self.split == "test":
+            self.sample_name = ["test_" + str(i) for i in range(len(self.label))]
+        else:
+            self.sample_name = ["sample_" + str(i) for i in range(len(self.label))]
+
     def __len__(self):
         return len(self.label)
 
     def __getitem__(self, index):
         if self.lazy_load and self.data is None:
-            # Lazy loading: load sample from shard on-demand
             shard_idx, local_idx = self.shard_indices[index]
 
-            # Check cache
             if shard_idx not in self.shard_cache:
-                # Load shard into cache
                 npz = np.load(self.shard_files[shard_idx], allow_pickle=True)
                 x_shard = self._to_nctvm(npz[self.x_key])
                 self.shard_cache[shard_idx] = x_shard
+                self.shard_access_order.append(shard_idx)
 
-                # Limit cache size to 3 shards (~240MB)
-                if len(self.shard_cache) > 3:
-                    oldest_key = next(iter(self.shard_cache))
-                    del self.shard_cache[oldest_key]
+                while len(self.shard_cache) > self.max_cache_shards:
+                    oldest_key = self.shard_access_order.pop(0)
+                    if oldest_key in self.shard_cache:
+                        del self.shard_cache[oldest_key]
+            else:
+                if shard_idx in self.shard_access_order:
+                    self.shard_access_order.remove(shard_idx)
+                    self.shard_access_order.append(shard_idx)
 
-            data_numpy = np.array(self.shard_cache[shard_idx][local_idx])  # C,T,V,M
+            data_numpy = np.array(self.shard_cache[shard_idx][local_idx])
         else:
-            # Eager loading: data already in memory
-            data_numpy = np.array(self.data[index])  # C,T,V,M
+            data_numpy = np.array(self.data[index])
 
         label = int(self.label[index])
 
@@ -285,3 +296,8 @@ class Feeder(Dataset):
                     data_numpy = tools.drop_joint(data_numpy, p=0.5)
 
         return data_numpy, index_t, label, index
+
+    def top_k(self, score, top_k):
+        rank = score.argsort()
+        hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
+        return sum(hit_top_k) * 1.0 / len(hit_top_k)

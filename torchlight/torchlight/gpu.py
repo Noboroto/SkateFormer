@@ -4,20 +4,20 @@ import torch
 
 def visible_gpu(gpus):
     """
-        set visible gpu.
+    set visible gpu.
 
-        can be a single id, or a list
+    can be a single id, or a list
 
-        return a list of new gpus ids
+    return a list of new gpus ids
     """
     gpus = [gpus] if isinstance(gpus, int) else list(gpus)
-    os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(list(map(str, gpus)))
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(list(map(str, gpus)))
     return list(range(len(gpus)))
 
 
 def ngpu(gpus):
     """
-        count how many gpus used.
+    count how many gpus used.
     """
     gpus = [gpus] if isinstance(gpus, int) else list(gpus)
     return len(gpus)
@@ -25,7 +25,7 @@ def ngpu(gpus):
 
 def occupy_gpu(gpus=None):
     """
-        make program appear on nvidia-smi.
+    make program appear on nvidia-smi.
     """
     if gpus is None:
         torch.zeros(1).cuda()

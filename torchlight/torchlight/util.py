@@ -9,11 +9,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 import yaml
 import h5py
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.autograd import Variable
 from torchpack.runner.hooks import PaviLogger
 
 
@@ -32,7 +28,7 @@ class IO:
         try:
             if self.pavi_logger is None:
                 url = "http://pavi.parrotsdnn.org/log"
-                with open(self.session_file, "r") as f:
+                with open(self.session_file) as f:
                     info = dict(
                         session_file=self.session_file,
                         session_text=f.read(),
@@ -135,7 +131,7 @@ class IO:
 
     def init_timer(self, *name):
         self.record_time()
-        self.split_timer = {k: 0.0000001 for k in name}
+        self.split_timer = dict.fromkeys(name, 1e-07)
 
     def check_time(self, name):
         self.split_timer[name] += self.split_time()
@@ -154,7 +150,7 @@ class IO:
             k: f"{int(round(v * 100 / sum(self.split_timer.values()))):02d}%"
             for k, v in self.split_timer.items()
         }
-        self.print_log(f"Time consumption:")
+        self.print_log("Time consumption:")
         for k in proportion:
             self.print_log(f"\t[{k}][{proportion[k]}]: {self.split_timer[k]:.4f}")
 

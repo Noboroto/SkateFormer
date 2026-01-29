@@ -18,7 +18,7 @@ train_feeder_args:
   thres: 64
   uniform: True
   partition: False
-  max_shards: -1  # Load all shards with lazy loading
+  max_shards: 5  # Load all shards with lazy loading
   lazy_load: True  # Enable lazy loading to avoid OOM
 
 test_feeder_args:
@@ -69,3 +69,11 @@ nesterov: True
 grad_clip: True
 grad_max: 1.0
 loss_type: LSCE
+
+# model saving (auto save enabled)
+save_interval: 5
+save_epoch: 1
+
+# performance optimizations
+amp_enabled: True
+compile_model: False  # Disabled: causes training hang on GPUs with few SMs

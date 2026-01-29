@@ -1,5 +1,3 @@
-from __future__ import print_function
-
 import argparse
 import inspect
 import os
@@ -18,7 +16,6 @@ import glob
 
 # torch
 import torch
-import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -198,6 +195,18 @@ def get_parser():
         default=False,
         help="skip interactive prompts for Docker/CI environments",
     )
+    parser.add_argument(
+        "--amp-enabled",
+        type=str2bool,
+        default=False,
+        help="enable automatic mixed precision training for faster GPU computation",
+    )
+    parser.add_argument(
+        "--compile-model",
+        type=str2bool,
+        default=False,
+        help="compile model with torch.compile() for optimized execution",
+    )
     return parser
 
 
@@ -231,6 +240,10 @@ class Processor:
                 )
 
         self.global_step = 0
+        self.scaler = None
+        if arg.amp_enabled:
+            self.scaler = torch.amp.GradScaler(device="cuda")
+            self.print_log("[AMP] Automatic Mixed Precision training enabled")
         self.load_model()
         self.load_data()
 
@@ -249,9 +262,15 @@ class Processor:
                     self.model, device_ids=self.arg.device, output_device=self.output_device
                 )
 
+        if self.arg.compile_model:
+            self.print_log("[COMPILE] Compiling model with torch.compile()...")
+            self.model = torch.compile(self.model, mode="default", fullgraph=False)
+            self.print_log("[COMPILE] Model compilation complete")
+
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
+        use_persistent = self.arg.num_worker > 0
         if self.arg.phase == "train":
             self.data_loader["train"] = torch.utils.data.DataLoader(
                 dataset=Feeder(**self.arg.train_feeder_args),
@@ -260,6 +279,9 @@ class Processor:
                 num_workers=self.arg.num_worker,
                 drop_last=True,
                 worker_init_fn=init_seed,
+                pin_memory=True,
+                persistent_workers=use_persistent,
+                prefetch_factor=4 if use_persistent else None,
             )
         self.data_loader["test"] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
@@ -268,6 +290,9 @@ class Processor:
             num_workers=self.arg.num_worker,
             drop_last=False,
             worker_init_fn=init_seed,
+            pin_memory=True,
+            persistent_workers=use_persistent,
+            prefetch_factor=4 if use_persistent else None,
         )
 
     def load_model(self):
@@ -284,9 +309,9 @@ class Processor:
 
         if self.arg.weights:
             # self.global_step = int(arg.weights[:-3].split('-')[-1])
-            self.print_log("Load weights from {}.".format(self.arg.weights))
+            self.print_log(f"Load weights from {self.arg.weights}.")
             if ".pkl" in self.arg.weights:
-                with open(self.arg.weights, "r") as f:
+                with open(self.arg.weights) as f:
                     weights = pickle.load(f)
             else:
                 weights = torch.load(self.arg.weights)
@@ -300,9 +325,9 @@ class Processor:
                 for key in keys:
                     if w in key:
                         if weights.pop(key, None) is not None:
-                            self.print_log("Sucessfully Remove Weights: {}.".format(key))
+                            self.print_log(f"Sucessfully Remove Weights: {key}.")
                         else:
-                            self.print_log("Can Not Remove Weights: {}.".format(key))
+                            self.print_log(f"Can Not Remove Weights: {key}.")
             try:
                 self.model.load_state_dict(weights)
             except:
@@ -334,7 +359,7 @@ class Processor:
         else:
             raise ValueError()
 
-        self.print_log("using warm up, epoch: {}".format(self.arg.warm_up_epoch))
+        self.print_log(f"using warm up, epoch: {self.arg.warm_up_epoch}")
 
     def load_scheduler(self, n_iter_per_epoch):
         num_steps = int(self.arg.num_epoch * n_iter_per_epoch)
@@ -359,7 +384,7 @@ class Processor:
         arg_dict = vars(self.arg)
         if not os.path.exists(self.arg.work_dir):
             os.makedirs(self.arg.work_dir)
-        with open("{}/config.yaml".format(self.arg.work_dir), "w") as f:
+        with open(f"{self.arg.work_dir}/config.yaml", "w") as f:
             f.write(f"# command line: {' '.join(sys.argv)}\n\n")
             yaml.dump(arg_dict, f)
 
@@ -375,7 +400,7 @@ class Processor:
             str = "[ " + localtime + " ] " + str
         print(str)
         if self.arg.print_log:
-            with open("{}/log.txt".format(self.arg.work_dir), "a") as f:
+            with open(f"{self.arg.work_dir}/log.txt", "a") as f:
                 print(str, file=f)
 
     def record_time(self):
@@ -389,7 +414,7 @@ class Processor:
 
     def train(self, epoch, save_model=False):
         self.model.train()
-        self.print_log("Training epoch: {}".format(epoch + 1))
+        self.print_log(f"Training epoch: {epoch + 1}")
         loader = self.data_loader["train"]
 
         loss_value = []
@@ -397,27 +422,36 @@ class Processor:
         self.train_writer.add_scalar("epoch", epoch, self.global_step)
         self.record_time()
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
-        process = tqdm(loader)
+        process = tqdm(loader, file=sys.stdout, dynamic_ncols=True, mininterval=1.0)
 
         for batch_idx, (data, index_t, label, index) in enumerate(process):
             self.lr_scheduler.step_update(self.global_step)
             self.global_step += 1
             with torch.no_grad():
-                data = data.float().cuda(self.output_device)
-                index_t = index_t.float().cuda(self.output_device)
-                label = label.long().cuda(self.output_device)
+                data = data.float().cuda(self.output_device, non_blocking=True)
+                index_t = index_t.float().cuda(self.output_device, non_blocking=True)
+                label = label.long().cuda(self.output_device, non_blocking=True)
             timer["dataloader"] += self.split_time()
 
-            # forward
-            output = self.model(data, index_t)
-            loss = self.loss(output, label)
-
-            # backward
             self.optimizer.zero_grad()
-            loss.backward()
-            if self.arg.grad_clip:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.arg.grad_max)
-            self.optimizer.step()
+
+            if self.scaler is not None:
+                with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                    output = self.model(data, index_t)
+                    loss = self.loss(output, label)
+                self.scaler.scale(loss).backward()
+                if self.arg.grad_clip:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.arg.grad_max)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                output = self.model(data, index_t)
+                loss = self.loss(output, label)
+                loss.backward()
+                if self.arg.grad_clip:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.arg.grad_max)
+                self.optimizer.step()
 
             loss_value.append(loss.data.item())
             timer["model"] += self.split_time()
@@ -435,14 +469,12 @@ class Processor:
 
         # statistics of time consumption and loss
         proportion = {
-            k: "{:02d}%".format(int(round(v * 100 / sum(timer.values())))) for k, v in timer.items()
+            k: f"{int(round(v * 100 / sum(timer.values()))):02d}%" for k, v in timer.items()
         }
         self.print_log(
-            "\tMean training loss: {:.4f}.  Mean training acc: {:.2f}%.".format(
-                np.mean(loss_value), np.mean(acc_value) * 100
-            )
+            f"\tMean training loss: {np.mean(loss_value):.4f}.  Mean training acc: {np.mean(acc_value) * 100:.2f}%."
         )
-        self.print_log("\tLearning Rate: {:.4f}".format(self.lr))
+        self.print_log(f"\tLearning Rate: {self.lr:.4f}")
         self.print_log(
             "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(**proportion)
         )
@@ -471,22 +503,29 @@ class Processor:
         if result_file is not None:
             f_r = open(result_file, "w")
         self.model.eval()
-        self.print_log("Eval epoch: {}".format(epoch + 1))
+        self.print_log(f"Eval epoch: {epoch + 1}")
         for ln in loader_name:
             loss_value = []
             score_frag = []
             label_list = []
             pred_list = []
             step = 0
-            process = tqdm(self.data_loader[ln])
+            process = tqdm(
+                self.data_loader[ln], file=sys.stdout, dynamic_ncols=True, mininterval=1.0
+            )
             for batch_idx, (data, index_t, label, index) in enumerate(process):
                 label_list.append(label)
                 with torch.no_grad():
-                    data = data.float().cuda(self.output_device)
-                    index_t = index_t.float().cuda(self.output_device)
-                    label = label.long().cuda(self.output_device)
-                    output = self.model(data, index_t)
-                    loss = self.loss(output, label)
+                    data = data.float().cuda(self.output_device, non_blocking=True)
+                    index_t = index_t.float().cuda(self.output_device, non_blocking=True)
+                    label = label.long().cuda(self.output_device, non_blocking=True)
+                    if self.arg.amp_enabled:
+                        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                            output = self.model(data, index_t)
+                            loss = self.loss(output, label)
+                    else:
+                        output = self.model(data, index_t)
+                        loss = self.loss(output, label)
                     score_frag.append(output.data.cpu().numpy())
                     loss_value.append(loss.data.item())
 
@@ -519,19 +558,15 @@ class Processor:
 
             score_dict = dict(zip(self.data_loader[ln].dataset.sample_name, score))
             self.print_log(
-                "\tMean {} loss of {} batches: {}.".format(
-                    ln, len(self.data_loader[ln]), np.mean(loss_value)
-                )
+                f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
             )
             for k in self.arg.show_topk:
                 self.print_log(
-                    "\tTop{}: {:.2f}%".format(k, 100 * self.data_loader[ln].dataset.top_k(score, k))
+                    f"\tTop{k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%"
                 )
 
             if save_score:
-                with open(
-                    "{}/epoch{}_{}_score.pkl".format(self.arg.work_dir, epoch + 1, ln), "wb"
-                ) as f:
+                with open(f"{self.arg.work_dir}/epoch{epoch + 1}_{ln}_score.pkl", "wb") as f:
                     pickle.dump(score_dict, f)
 
             # acc for each class:
@@ -541,16 +576,14 @@ class Processor:
             list_diag = np.diag(confusion)
             list_raw_sum = np.sum(confusion, axis=1)
             each_acc = list_diag / list_raw_sum
-            with open(
-                "{}/epoch{}_{}_each_class_acc.csv".format(self.arg.work_dir, epoch + 1, ln), "w"
-            ) as f:
+            with open(f"{self.arg.work_dir}/epoch{epoch + 1}_{ln}_each_class_acc.csv", "w") as f:
                 writer = csv.writer(f)
                 writer.writerow(each_acc)
                 writer.writerows(confusion)
 
     def start(self):
         if self.arg.phase == "train":
-            self.print_log("Parameters:\n{}\n".format(str(vars(self.arg))))
+            self.print_log(f"Parameters:\n{str(vars(self.arg))}\n")
             self.global_step = (
                 self.arg.start_epoch * len(self.data_loader["train"]) / self.arg.batch_size
             )
@@ -559,17 +592,29 @@ class Processor:
                 return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
             self.print_log(f"# Parameters: {count_parameters(self.model)}")
+            if self.arg.amp_enabled:
+                self.print_log("[AMP] Mixed Precision: ENABLED")
+            if self.arg.compile_model:
+                self.print_log("[COMPILE] torch.compile(): ENABLED")
+
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
-                if epoch + 1 < self.arg.num_epoch * 0.9:
-                    self.train(epoch, save_model=False)
-                else:
-                    self.train(epoch, save_model=True)
-                    self.eval(epoch, save_score=True, loader_name=["test"])
+                should_save = (epoch + 1) >= self.arg.save_epoch and (
+                    epoch + 1
+                ) % self.arg.save_interval == 0
+                should_eval = should_save or (epoch + 1) % self.arg.eval_interval == 0
+
+                self.train(epoch, save_model=should_save)
+                if should_eval:
+                    self.eval(epoch, save_score=should_save, loader_name=["test"])
 
             # test the best model
             weights_path = glob.glob(
                 os.path.join(self.arg.work_dir, "runs-" + str(self.best_acc_epoch) + "*")
-            )[0]
+            )
+            if not weights_path:
+                self.print_log("No checkpoint found for best epoch, skipping final evaluation")
+                return
+            weights_path = weights_path[0]
             weights = torch.load(weights_path)
             if type(self.arg.device) is list:
                 if len(self.arg.device) > 1:
@@ -602,8 +647,8 @@ class Processor:
             if self.arg.weights is None:
                 raise ValueError("Please appoint --weights.")
             self.arg.print_log = False
-            self.print_log("Model:   {}.".format(self.arg.model))
-            self.print_log("Weights: {}.".format(self.arg.weights))
+            self.print_log(f"Model:   {self.arg.model}.")
+            self.print_log(f"Weights: {self.arg.weights}.")
             self.eval(
                 epoch=0,
                 save_score=self.arg.save_score,
@@ -620,12 +665,12 @@ if __name__ == "__main__":
     # load arg form config file
     p = parser.parse_args()
     if p.config is not None:
-        with open(p.config, "r") as f:
+        with open(p.config) as f:
             default_arg = yaml.load(f, Loader=yaml.SafeLoader)
         key = vars(p).keys()
         for k in default_arg.keys():
             if k not in key:
-                print("WRONG ARG: {}".format(k))
+                print(f"WRONG ARG: {k}")
                 assert k in key
         parser.set_defaults(**default_arg)
 
