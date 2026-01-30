@@ -18,7 +18,7 @@ train_feeder_args:
   thres: 64
   uniform: True
   partition: False
-  max_shards: 5  # Load all shards with lazy loading
+  max_shards: -1  # Load all shards with lazy loading
   lazy_load: True  # Enable lazy loading to avoid OOM
 
 test_feeder_args:
@@ -62,8 +62,8 @@ warm_up_epoch: 25
 
 # training
 device: [0]
-batch_size: 128
-test_batch_size: 128
+batch_size: 64
+test_batch_size: 64
 num_epoch: 300
 nesterov: True
 grad_clip: True
