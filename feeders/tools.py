@@ -23,7 +23,7 @@ def valid_crop_resize(data_numpy, valid_frame_num, p_interval, window, thres):
         c_b = begin + bias
         c_e = end - bias
     else:
-        p = np.random.rand(1) * (p_interval[1] - p_interval[0]) + p_interval[0]
+        p = np.random.rand() * (p_interval[1] - p_interval[0]) + p_interval[0]
         cropped_length = np.minimum(
             np.maximum(int(np.floor(valid_size * p)), thres), valid_size
         )  # constraint cropped_length lower bound as thres
@@ -76,7 +76,7 @@ def valid_crop_uniform(data_numpy, valid_frame_num, p_interval, window, thres):
         data = data_numpy[:, inds, :, :]
 
     else:
-        p = np.random.rand(1) * (p_interval[1] - p_interval[0]) + p_interval[0]
+        p = np.random.rand() * (p_interval[1] - p_interval[0]) + p_interval[0]
         cropped_length = np.minimum(
             np.maximum(int(np.floor(valid_size * p)), thres), valid_size
         )  # constraint cropped_length lower bound as 64
