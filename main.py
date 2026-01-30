@@ -1,4 +1,5 @@
 import argparse
+import gc
 import inspect
 import os
 import pickle
@@ -127,6 +128,9 @@ def get_parser():
     parser.add_argument("--feeder", default="feeder.feeder", help="data loader will be used")
     parser.add_argument(
         "--num-worker", type=int, default=4, help="the number of worker for data loader"
+    )
+    parser.add_argument(
+        "--pin-memory", type=str2bool, default=True, help="enable pin_memory in DataLoader"
     )
     parser.add_argument(
         "--train-feeder-args",
@@ -280,7 +284,7 @@ class Processor:
                 num_workers=self.arg.num_worker,
                 drop_last=True,
                 worker_init_fn=init_seed,
-                pin_memory=True,
+                pin_memory=self.arg.pin_memory,
                 persistent_workers=use_persistent,
                 prefetch_factor=4 if use_persistent else None,
             )
@@ -291,7 +295,7 @@ class Processor:
             num_workers=self.arg.num_worker,
             drop_last=False,
             worker_init_fn=init_seed,
-            pin_memory=True,
+            pin_memory=self.arg.pin_memory,
             persistent_workers=use_persistent,
             prefetch_factor=4 if use_persistent else None,
         )
@@ -582,6 +586,23 @@ class Processor:
                 writer.writerow(each_acc)
                 writer.writerows(confusion)
 
+    def clear_memory(self, epoch: int) -> None:
+        """Clear CUDA memory cache and force garbage collection.
+
+        Args:
+            epoch: Current epoch number for logging
+        """
+        if torch.cuda.is_available():
+            memory_before = torch.cuda.memory_allocated() / 1024**3
+            torch.cuda.empty_cache()
+            gc.collect()
+            memory_after = torch.cuda.memory_allocated() / 1024**3
+            self.print_log(
+                f"[Memory Cleanup] Epoch {epoch + 1}: "
+                f"Before={memory_before:.2f}GB, After={memory_after:.2f}GB, "
+                f"Freed={memory_before - memory_after:.2f}GB"
+            )
+
     def start(self):
         if self.arg.phase == "train":
             self.print_log(f"Parameters:\n{str(vars(self.arg))}\n")
@@ -607,6 +628,9 @@ class Processor:
                 self.train(epoch, save_model=should_save)
                 if should_eval:
                     self.eval(epoch, save_score=should_save, loader_name=["test"])
+
+                if (epoch + 1) % 5 == 0:
+                    self.clear_memory(epoch)
 
             # test the best model
             weights_path = glob.glob(
