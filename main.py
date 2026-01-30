@@ -217,7 +217,8 @@ class Processor:
 
         if arg.phase == "train":
             if not arg.train_feeder_args["debug"]:
-                arg.model_saved_name = os.path.join(arg.work_dir, "runs")
+                time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                arg.model_saved_name = os.path.join(arg.work_dir, time_str)
                 if os.path.isdir(arg.model_saved_name):
                     print("log_dir: ", arg.model_saved_name, "already exist")
                     if arg.no_interactive:
