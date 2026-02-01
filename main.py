@@ -221,8 +221,7 @@ class Processor:
 
         if arg.phase == "train":
             if not arg.train_feeder_args["debug"]:
-                time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                arg.model_saved_name = os.path.join(arg.work_dir, time_str)
+                arg.model_saved_name = os.path.join(arg.work_dir, arg.starttime_str)
                 if os.path.isdir(arg.model_saved_name):
                     print("log_dir: ", arg.model_saved_name, "already exist")
                     if arg.no_interactive:
@@ -700,6 +699,7 @@ if __name__ == "__main__":
         parser.set_defaults(**default_arg)
 
     arg = parser.parse_args()
+    arg.starttime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     init_seed(arg.seed)
     processor = Processor(arg)
     processor.start()
