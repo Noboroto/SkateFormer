@@ -211,6 +211,18 @@ def get_parser():
         default=False,
         help="compile model with torch.compile() for optimized execution",
     )
+    parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="path to checkpoint file to resume training from",
+    )
+    parser.add_argument(
+        "--auto-resume",
+        type=str2bool,
+        default=False,
+        help="automatically resume from best checkpoint in work_dir if available",
+    )
     return parser
 
 
@@ -270,6 +282,26 @@ class Processor:
             self.print_log("[COMPILE] Compiling model with torch.compile()...")
             self.model = torch.compile(self.model, mode="default", fullgraph=False)
             self.print_log("[COMPILE] Model compilation complete")
+
+        if self.arg.phase == "train":
+            if self.arg.resume_from:
+                self.load_checkpoint(self.arg.resume_from)
+            elif self.arg.auto_resume:
+                checkpoint_path = self.find_latest_checkpoint()
+                if checkpoint_path:
+                    self.load_checkpoint(checkpoint_path)
+                else:
+                    self.print_log("No checkpoint found for auto-resume, starting from scratch")
+
+        if self.arg.phase == "train":
+            if self.arg.resume_from:
+                self.load_checkpoint(self.arg.resume_from)
+            elif self.arg.auto_resume:
+                checkpoint_path = self.find_latest_checkpoint()
+                if checkpoint_path:
+                    self.load_checkpoint(checkpoint_path)
+                else:
+                    self.print_log("No checkpoint found for auto-resume, starting from scratch")
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
@@ -384,6 +416,73 @@ class Processor:
         else:
             raise ValueError()
 
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        """Load checkpoint and restore training state.
+
+        Args:
+            checkpoint_path: Path to checkpoint file
+        """
+        if not os.path.exists(checkpoint_path):
+            self.print_log(f"Checkpoint not found: {checkpoint_path}")
+            return
+
+        self.print_log(f"Loading checkpoint from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
+
+        state_dict = checkpoint["model_state_dict"]
+        if type(self.arg.device) is list and len(self.arg.device) > 1:
+            state_dict = OrderedDict(
+                [["module." + k, v.cuda(self.output_device)] for k, v in state_dict.items()]
+            )
+        else:
+            state_dict = OrderedDict(
+                [[k, v.cuda(self.output_device)] for k, v in state_dict.items()]
+            )
+        self.model.load_state_dict(state_dict)
+
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        if checkpoint.get("lr_scheduler_state_dict") and self.lr_scheduler:
+            self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
+
+        if checkpoint.get("scaler_state_dict") and self.scaler:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+        self.arg.start_epoch = checkpoint["epoch"]
+        self.global_step = checkpoint["global_step"]
+        self.best_acc = checkpoint.get("best_acc", 0)
+        self.best_acc_epoch = checkpoint.get("best_acc_epoch", 0)
+
+        self.print_log(
+            f"Resumed from epoch {self.arg.start_epoch}, "
+            f"global_step {self.global_step}, "
+            f"best_acc {self.best_acc:.4f} at epoch {self.best_acc_epoch}"
+        )
+
+    def find_latest_checkpoint(self) -> str:
+        """Find the latest checkpoint in work_dir.
+
+        Returns:
+            Path to latest checkpoint, or empty string if not found
+        """
+        best_checkpoint = os.path.join(self.arg.work_dir, "checkpoint_best.pt")
+        if os.path.exists(best_checkpoint):
+            self.print_log(f"Found best checkpoint: {best_checkpoint}")
+            return best_checkpoint
+
+        latest_checkpoint = os.path.join(self.arg.work_dir, "checkpoint_latest.pt")
+        if os.path.exists(latest_checkpoint):
+            self.print_log(f"Found latest checkpoint: {latest_checkpoint}")
+            return latest_checkpoint
+
+        checkpoint_files = glob.glob(os.path.join(self.arg.work_dir, "*-*-*.pt"))
+        if checkpoint_files:
+            latest = max(checkpoint_files, key=os.path.getctime)
+            self.print_log(f"Found checkpoint: {latest}")
+            return latest
+
+        return ""
+
     def save_arg(self):
         arg_dict = vars(self.arg)
         if not os.path.exists(self.arg.work_dir):
@@ -489,15 +588,32 @@ class Processor:
                 [[k.split("module.")[-1], v.cpu()] for k, v in state_dict.items()]
             )
 
-            torch.save(
-                weights,
+            checkpoint = {
+                "epoch": epoch + 1,
+                "global_step": int(self.global_step),
+                "model_state_dict": weights,
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "lr_scheduler_state_dict": self.lr_scheduler.state_dict()
+                if self.lr_scheduler
+                else None,
+                "best_acc": self.best_acc,
+                "best_acc_epoch": self.best_acc_epoch,
+                "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+            }
+
+            checkpoint_path = (
                 self.arg.model_saved_name
                 + "-"
                 + str(epoch + 1)
                 + "-"
                 + str(int(self.global_step))
-                + ".pt",
+                + ".pt"
             )
+            torch.save(checkpoint, checkpoint_path)
+
+            latest_checkpoint_path = os.path.join(self.arg.work_dir, "checkpoint_latest.pt")
+            torch.save(checkpoint, latest_checkpoint_path)
+            self.print_log(f"Saved checkpoint to {checkpoint_path}")
 
     def eval(
         self, epoch, save_score=False, loader_name=["test"], wrong_file=None, result_file=None
@@ -554,6 +670,29 @@ class Processor:
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 self.best_acc_epoch = epoch + 1
+
+                if self.arg.phase == "train":
+                    state_dict = self.model.state_dict()
+                    weights = OrderedDict(
+                        [[k.split("module.")[-1], v.cpu()] for k, v in state_dict.items()]
+                    )
+                    checkpoint = {
+                        "epoch": epoch + 1,
+                        "global_step": int(self.global_step),
+                        "model_state_dict": weights,
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                        "lr_scheduler_state_dict": self.lr_scheduler.state_dict()
+                        if self.lr_scheduler
+                        else None,
+                        "best_acc": self.best_acc,
+                        "best_acc_epoch": self.best_acc_epoch,
+                        "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+                    }
+                    best_checkpoint_path = os.path.join(self.arg.work_dir, "checkpoint_best.pt")
+                    torch.save(checkpoint, best_checkpoint_path)
+                    self.print_log(
+                        f"New best accuracy: {self.best_acc:.4f}, saved to {best_checkpoint_path}"
+                    )
 
             print("Accuracy: ", accuracy, " model: ", self.arg.model_saved_name)
             if self.arg.phase == "train":

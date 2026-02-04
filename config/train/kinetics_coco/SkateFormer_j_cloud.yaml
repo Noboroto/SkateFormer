@@ -17,8 +17,8 @@ train_feeder_args:
   inter_p: 0.0
   thres: 64
   uniform: True
-  partition: False
-  max_shards: 25  # Load all shards with lazy loading
+  partition: True
+  max_shards: -1  # Load all shards with lazy loading
   lazy_load: False  # Enable lazy loading to avoid OOM
 
 test_feeder_args:
@@ -28,7 +28,7 @@ test_feeder_args:
   p_interval: [0.95]
   thres: 64
   uniform: True
-  partition: False
+  partition: True
   debug: False
 
 # model
