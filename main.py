@@ -92,7 +92,7 @@ def get_parser():
         "--save-score",
         type=str2bool,
         default=False,
-        help="if ture, the classification score will be stored",
+        help="if true, the classification score will be stored",
     )
 
     # visulize and debug
