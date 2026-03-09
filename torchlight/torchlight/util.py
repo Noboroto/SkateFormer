@@ -10,7 +10,11 @@ from datetime import datetime, timezone, timedelta
 import yaml
 import h5py
 import torch
-from torchpack.runner.hooks import PaviLogger
+
+try:
+    from torchpack.runner.hooks import PaviLogger
+except (ImportError, AttributeError):
+    PaviLogger = None
 
 
 class IO:
