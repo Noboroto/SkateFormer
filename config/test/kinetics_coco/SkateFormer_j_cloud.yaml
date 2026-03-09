@@ -1,5 +1,5 @@
 seed: 1
-num_worker: 8
+num_worker: 4
 work_dir: ./work_dir/kinetics/coco/SkateFormer_j/
 
 phase: test
@@ -7,13 +7,13 @@ phase: test
 # feeder - converted from OpenPose-18 via tools/convert_kinetics_openpose_to_coco.py
 feeder: feeders.feeder_kinetics_coco.Feeder
 test_feeder_args:
-  data_path: ./converted/kinetics-skeleton
+  data_path: /data/kinetics-skeleton
   split: test
   window_size: 64
   p_interval: [0.95]
   thres: 64
   uniform: True
-  partition: False
+  partition: True
   debug: False
 
 # model
@@ -28,16 +28,16 @@ model_args:
   head_drop: 0.0
   rel: True
   drop_path: 0.2
-  type_1_size: [8, 8]
-  type_2_size: [8, 12]
-  type_3_size: [8, 8]
-  type_4_size: [8, 12]
+  type_1_size: [8, 17]
+  type_2_size: [8, 17]
+  type_3_size: [8, 17]
+  type_4_size: [8, 17]
   mlp_ratio: 4.0
   index_t: True
 
 # evaluation settings
 device: [0]
-test_batch_size: 64
+test_batch_size: 70
 
 # specify weights file to load for evaluation
 weights: ./work_dir/kinetics/coco/SkateFormer_j/best_model.pt
