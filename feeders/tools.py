@@ -17,7 +17,8 @@ def valid_crop_resize(data_numpy, valid_frame_num, p_interval, window, thres):
     # crop
     if len(p_interval) == 1:
         p = p_interval[0]
-        bias = int((1 - p) * valid_size / 2)
+        cropped_length = np.minimum(np.maximum(int(np.floor(valid_size * p)), thres), valid_size)
+        bias = max(0, (valid_size - cropped_length) // 2)
         data = data_numpy[:, begin + bias : end - bias, :, :]  # center_crop
         cropped_length = data.shape[1]
         c_b = begin + bias
@@ -63,7 +64,7 @@ def valid_crop_uniform(data_numpy, valid_frame_num, p_interval, window, thres):
     if len(p_interval) == 1:
         p = p_interval[0]
         cropped_length = np.minimum(np.maximum(int(np.floor(valid_size * p)), thres), valid_size)
-        bias = int((1 - p) * valid_size / 2)
+        bias = max(0, (valid_size - cropped_length) // 2)
 
         if cropped_length < window:
             inds = np.arange(cropped_length)
