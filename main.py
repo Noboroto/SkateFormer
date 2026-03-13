@@ -306,7 +306,9 @@ class Processor:
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
-        use_persistent = self.arg.num_worker > 0
+        # Persistent workers have shown epoch-boundary hangs on Vast.ai with the
+        # Kinetics COCO kpfile feeder, so keep worker processes non-persistent.
+        use_persistent = False
         if self.arg.phase == "train":
             self.data_loader["train"] = torch.utils.data.DataLoader(
                 dataset=Feeder(**self.arg.train_feeder_args),
