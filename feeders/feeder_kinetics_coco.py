@@ -52,6 +52,7 @@ class Feeder(Dataset):
         label_path=None,
         p_interval=1,
         split="train",
+        data_type="j",
         aug_method="z",
         intra_p=0.5,
         inter_p=0.0,
@@ -70,6 +71,7 @@ class Feeder(Dataset):
         self.debug = debug
         self.data_path = data_path
         self.split = split
+        self.data_type = data_type
         self.aug_method = aug_method
         self.intra_p = intra_p
         self.inter_p = inter_p
@@ -451,6 +453,17 @@ class Feeder(Dataset):
                     data_numpy = tools.drop_axis(data_numpy, p=0.5)
                 if "9" in self.aug_method:
                     data_numpy = tools.drop_joint(data_numpy, p=0.5)
+
+        # modality transform (after augmentation, matching NTU feeder pattern)
+        if self.data_type == "b":
+            j2b = tools.joint2bone_coco17()
+            data_numpy = j2b(data_numpy)
+        elif self.data_type == "jm":
+            data_numpy = tools.to_motion(data_numpy)
+        elif self.data_type == "bm":
+            j2b = tools.joint2bone_coco17()
+            data_numpy = j2b(data_numpy)
+            data_numpy = tools.to_motion(data_numpy)
 
         return data_numpy, index_t, label, index
 

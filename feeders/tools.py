@@ -454,6 +454,28 @@ class joint2bone(nn.Module):
         return bone
 
 
+class joint2bone_coco17:
+    """Joint-to-bone transform for COCO-17 skeleton layout.
+
+    bone[child] = joint[child] - joint[parent].
+    Joint 0 (nose) is the root; its bone vector is always zero.
+    """
+
+    def __init__(self):
+        self.pairs = [
+            (0, 0),   (1, 0),   (2, 0),   (3, 1),   (4, 2),
+            (5, 0),   (6, 0),   (7, 5),   (8, 6),   (9, 7),
+            (10, 8),  (11, 5),  (12, 6),  (13, 11), (14, 12),
+            (15, 13), (16, 14),
+        ]
+
+    def __call__(self, joint):
+        bone = np.zeros_like(joint)
+        for v1, v2 in self.pairs:
+            bone[:, :, v1, :] = joint[:, :, v1, :] - joint[:, :, v2, :]
+        return bone
+
+
 class bone2joint(nn.Module):
     def __init__(self):
         super(bone2joint, self).__init__()
