@@ -79,3 +79,6 @@ save_epoch: 1
 # performance optimizations
 amp_enabled: True
 compile_model: False  # Disabled: causes training hang on GPUs with few SMs
+early_stopping_enabled: True
+early_stopping_patience: 6
+early_stopping_min_delta: 0.2

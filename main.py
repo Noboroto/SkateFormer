@@ -223,6 +223,24 @@ def get_parser():
         default=False,
         help="automatically resume from best checkpoint in work_dir if available",
     )
+    parser.add_argument(
+        "--early-stopping-enabled",
+        type=str2bool,
+        default=False,
+        help="enable early stopping on validation Top-1 accuracy",
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=6,
+        help="number of evals without significant Top-1 improvement before stopping",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.2,
+        help="minimum Top-1 percentage-point improvement required to reset patience",
+    )
     return parser
 
 
@@ -270,6 +288,9 @@ class Processor:
         self.lr = self.arg.base_lr
         self.best_acc = 0
         self.best_acc_epoch = 0
+        self.early_stopping_best_acc = 0
+        self.early_stopping_wait = 0
+        self.should_stop_early = False
         self.model = self.model.cuda(self.output_device)
 
         if type(self.arg.device) is list:
@@ -454,12 +475,50 @@ class Processor:
         self.global_step = checkpoint["global_step"]
         self.best_acc = checkpoint.get("best_acc", 0)
         self.best_acc_epoch = checkpoint.get("best_acc_epoch", 0)
+        self.early_stopping_best_acc = checkpoint.get("early_stopping_best_acc", self.best_acc)
+        self.early_stopping_wait = checkpoint.get("early_stopping_wait", 0)
 
         self.print_log(
             f"Resumed from epoch {self.arg.start_epoch}, "
             f"global_step {self.global_step}, "
             f"best_acc {self.best_acc:.4f} at epoch {self.best_acc_epoch}"
         )
+
+    def update_early_stopping(self, epoch: int, accuracy: float, loss: float, loader_name: str) -> bool:
+        """Track significant Top-1 improvements and stop after patience runs out."""
+        if (
+            not self.arg.early_stopping_enabled
+            or self.arg.phase != "train"
+            or loader_name != "test"
+        ):
+            return False
+
+        min_delta = self.arg.early_stopping_min_delta / 100.0
+        if accuracy > self.early_stopping_best_acc + min_delta:
+            self.early_stopping_best_acc = accuracy
+            self.early_stopping_wait = 0
+            self.print_log(
+                "[Early Stopping] Significant Top-1 improvement to "
+                f"{accuracy * 100:.2f}% (loss={loss:.4f}); patience reset"
+            )
+            return False
+
+        self.early_stopping_wait += 1
+        remaining = self.arg.early_stopping_patience - self.early_stopping_wait
+        self.print_log(
+            "[Early Stopping] No significant Top-1 improvement "
+            f"(best={self.early_stopping_best_acc * 100:.2f}%, current={accuracy * 100:.2f}%, "
+            f"min_delta={self.arg.early_stopping_min_delta:.2f} pts). "
+            f"Patience {self.early_stopping_wait}/{self.arg.early_stopping_patience}"
+        )
+        if remaining <= 0:
+            self.print_log(
+                f"[Early Stopping] Triggered at epoch {epoch + 1} after "
+                f"{self.arg.early_stopping_patience} evals without significant improvement"
+            )
+            self.should_stop_early = True
+            return True
+        return False
 
     def find_latest_checkpoint(self) -> str:
         """Find the latest checkpoint in work_dir.
@@ -600,6 +659,8 @@ class Processor:
                 else None,
                 "best_acc": self.best_acc,
                 "best_acc_epoch": self.best_acc_epoch,
+                "early_stopping_best_acc": self.early_stopping_best_acc,
+                "early_stopping_wait": self.early_stopping_wait,
                 "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
             }
 
@@ -617,9 +678,8 @@ class Processor:
             torch.save(checkpoint, latest_checkpoint_path)
             self.print_log(f"Saved checkpoint to {checkpoint_path}")
 
-    def eval(
-        self, epoch, save_score=False, loader_name=["test"], wrong_file=None, result_file=None
-    ):
+    def eval(self, epoch, save_score=False, loader_name=["test"], wrong_file=None, result_file=None):
+        metrics = {}
         if wrong_file is not None:
             f_w = open(wrong_file, "w")
         if result_file is not None:
@@ -688,6 +748,8 @@ class Processor:
                         else None,
                         "best_acc": self.best_acc,
                         "best_acc_epoch": self.best_acc_epoch,
+                        "early_stopping_best_acc": self.early_stopping_best_acc,
+                        "early_stopping_wait": self.early_stopping_wait,
                         "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
                     }
                     best_checkpoint_path = os.path.join(self.arg.work_dir, "checkpoint_best.pt")
@@ -725,6 +787,11 @@ class Processor:
                 writer = csv.writer(f)
                 writer.writerow(each_acc)
                 writer.writerows(confusion)
+
+            metrics[ln] = {"loss": float(loss), "accuracy": float(accuracy)}
+            self.update_early_stopping(epoch, accuracy=float(accuracy), loss=float(loss), loader_name=ln)
+
+        return metrics
 
     def clear_memory(self, epoch: int) -> None:
         """Clear CUDA memory cache and force garbage collection.
@@ -768,6 +835,8 @@ class Processor:
                 self.train(epoch, save_model=should_save)
                 if should_eval:
                     self.eval(epoch, save_score=should_save, loader_name=["test"])
+                    if self.should_stop_early:
+                        break
 
                 if (epoch + 1) % 5 == 0:
                     self.clear_memory(epoch)
