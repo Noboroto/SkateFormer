@@ -453,6 +453,10 @@ class Processor:
         checkpoint = torch.load(checkpoint_path, weights_only=False)
 
         state_dict = checkpoint["model_state_dict"]
+        # Strip _orig_mod. prefix from torch.compile'd checkpoints
+        state_dict = OrderedDict(
+            [[k.removeprefix("_orig_mod."), v] for k, v in state_dict.items()]
+        )
         if type(self.arg.device) is list and len(self.arg.device) > 1:
             state_dict = OrderedDict(
                 [["module." + k, v.cuda(self.output_device)] for k, v in state_dict.items()]
@@ -646,7 +650,7 @@ class Processor:
         if save_model:
             state_dict = self.model.state_dict()
             weights = OrderedDict(
-                [[k.split("module.")[-1], v.cpu()] for k, v in state_dict.items()]
+                [[k.removeprefix("module.").removeprefix("_orig_mod."), v.cpu()] for k, v in state_dict.items()]
             )
 
             checkpoint = {
@@ -736,7 +740,7 @@ class Processor:
                 if self.arg.phase == "train":
                     state_dict = self.model.state_dict()
                     weights = OrderedDict(
-                        [[k.split("module.")[-1], v.cpu()] for k, v in state_dict.items()]
+                        [[k.removeprefix("module.").removeprefix("_orig_mod."), v.cpu()] for k, v in state_dict.items()]
                     )
                     checkpoint = {
                         "epoch": epoch + 1,
