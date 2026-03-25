@@ -57,7 +57,7 @@ supcon_hidden_dim: 512
 supcon_out_dim: 128
 
 # Fine-tune from CE-pretrained
-weights: ./work_dir/kinetics/coco/SkateFormer_b_cloud/checkpoint_best.pt
+weights: ../work_dir/kinetics/coco/SkateFormer_b_cloud/checkpoint_best.pt
 ignore_weights: [head]
 
 # Freeze first 4 stages, unfreeze at epoch 30
