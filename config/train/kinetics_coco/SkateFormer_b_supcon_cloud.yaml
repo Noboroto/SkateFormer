@@ -8,6 +8,7 @@ phase: train
 feeder: feeders.feeder_kinetics_coco.Feeder
 train_feeder_args:
   data_path: /data/k400_2d.pkl/k400_2d.pkl
+  keypoint_path: /data/k400_kpfiles_2d
   split: train
   data_type: b
   debug: False
@@ -22,6 +23,7 @@ train_feeder_args:
 
 test_feeder_args:
   data_path: /data/k400_2d.pkl/k400_2d.pkl
+  keypoint_path: /data/k400_kpfiles_2d
   split: val
   data_type: b
   window_size: 64
