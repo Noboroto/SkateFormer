@@ -193,6 +193,14 @@ def get_parser():
         "--lr-decay-rate", type=float, default=0.1, help="decay rate for learning rate"
     )
     parser.add_argument("--loss-type", type=str, default="CE")
+    # SupCon-specific arguments
+    parser.add_argument("--supcon-temperature", type=float, default=0.07)
+    parser.add_argument("--supcon-hidden-dim", type=int, default=512)
+    parser.add_argument("--supcon-out-dim", type=int, default=128)
+    parser.add_argument("--supcon-freeze-blocks", type=int, default=0,
+                        help="Freeze first N stages for SupCon fine-tuning (0=no freeze)")
+    parser.add_argument("--supcon-unfreeze-epoch", type=int, default=30,
+                        help="Unfreeze all blocks after this epoch")
     parser.add_argument(
         "--no-interactive",
         type=str2bool,
@@ -361,8 +369,23 @@ class Processor:
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
         print(Model)
         self.model = Model(**self.arg.model_args)
+        self.is_supcon = self.arg.loss_type == "SupCon"
         if self.arg.loss_type == "CE":
             self.loss = nn.CrossEntropyLoss().cuda(output_device)
+        elif self.is_supcon:
+            import sys as _sys
+            _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+            from shared.losses.supcon_loss import SupConLoss
+            from shared.models.projection_head import SupConProjectionHead
+            self.loss = SupConLoss(temperature=self.arg.supcon_temperature).cuda(output_device)
+            # Determine backbone embedding dim
+            embed_dim = self.arg.model_args.get("channels", (96, 192, 192, 192))[-1]
+            self.projection_head = SupConProjectionHead(
+                in_dim=embed_dim,
+                hidden_dim=self.arg.supcon_hidden_dim,
+                out_dim=self.arg.supcon_out_dim,
+            ).cuda(output_device)
+            self.print_log(f"[SupCon] Projection head: {embed_dim} -> {self.arg.supcon_hidden_dim} -> {self.arg.supcon_out_dim}")
         else:
             self.loss = LabelSmoothingCrossEntropy(smoothing=0.1).cuda(output_device)
 
@@ -373,7 +396,11 @@ class Processor:
                 with open(self.arg.weights) as f:
                     weights = pickle.load(f)
             else:
-                weights = torch.load(self.arg.weights)
+                weights = torch.load(self.arg.weights, map_location="cpu", weights_only=False)
+
+            # Handle checkpoint dict format (model_state_dict key)
+            if isinstance(weights, dict) and "model_state_dict" in weights:
+                weights = weights["model_state_dict"]
 
             weights = OrderedDict(
                 [[k.split("module.")[-1], v.cuda(output_device)] for k, v in weights.items()]
@@ -399,9 +426,28 @@ class Processor:
                 self.model.load_state_dict(state)
 
     def load_optimizer(self):
+        # Collect parameters: model + projection head (if SupCon)
+        params = list(self.model.parameters())
+        if self.is_supcon and hasattr(self, "projection_head"):
+            params = params + list(self.projection_head.parameters())
+            # Apply freeze if requested
+            if self.arg.supcon_freeze_blocks > 0:
+                n_frozen = 0
+                for i, stage in enumerate(self.model.stages):
+                    if i < self.arg.supcon_freeze_blocks:
+                        for p in stage.parameters():
+                            p.requires_grad = False
+                            n_frozen += 1
+                # Also freeze stem
+                for p in self.model.stem.parameters():
+                    p.requires_grad = False
+                    n_frozen += 1
+                self.print_log(f"[SupCon] Frozen {n_frozen} params in first {self.arg.supcon_freeze_blocks} stages + stem")
+            params = [p for p in params if p.requires_grad]
+
         if self.arg.optimizer == "SGD":
             self.optimizer = optim.SGD(
-                self.model.parameters(),
+                params,
                 lr=self.arg.base_lr,
                 momentum=0.9,
                 nesterov=self.arg.nesterov,
@@ -409,11 +455,11 @@ class Processor:
             )
         elif self.arg.optimizer == "Adam":
             self.optimizer = optim.Adam(
-                self.model.parameters(), lr=self.arg.base_lr, weight_decay=self.arg.weight_decay
+                params, lr=self.arg.base_lr, weight_decay=self.arg.weight_decay
             )
         elif self.arg.optimizer == "AdamW":
             self.optimizer = optim.AdamW(
-                self.model.parameters(), lr=self.arg.base_lr, weight_decay=self.arg.weight_decay
+                params, lr=self.arg.base_lr, weight_decay=self.arg.weight_decay
             )
         else:
             raise ValueError()
@@ -580,8 +626,30 @@ class Processor:
         self.record_time()
         return split_time
 
+    def _supcon_unfreeze_check(self, epoch):
+        """Unfreeze all blocks after supcon_unfreeze_epoch."""
+        if (
+            self.is_supcon
+            and self.arg.supcon_freeze_blocks > 0
+            and epoch == self.arg.supcon_unfreeze_epoch
+        ):
+            for p in self.model.parameters():
+                p.requires_grad = True
+            # Rebuild optimizer with all params
+            all_params = list(self.model.parameters()) + list(self.projection_head.parameters())
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = self.arg.base_lr * 0.1  # reduce LR for unfrozen layers
+            self.optimizer.add_param_group({
+                "params": [p for p in self.model.parameters() if p not in set(self.optimizer.param_groups[0]["params"])],
+                "lr": self.arg.base_lr * 0.01,
+            })
+            self.print_log(f"[SupCon] Unfroze all blocks at epoch {epoch + 1}, LR reduced")
+
     def train(self, epoch, save_model=False):
         self.model.train()
+        if self.is_supcon and hasattr(self, "projection_head"):
+            self.projection_head.train()
+            self._supcon_unfreeze_check(epoch)
         self.print_log(f"Training epoch: {epoch + 1}")
         loader = self.data_loader["train"]
 
@@ -605,29 +673,50 @@ class Processor:
 
             if self.scaler is not None:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                    output = self.model(data, index_t)
-                    loss = self.loss(output, label)
+                    if self.is_supcon:
+                        embeddings = self.model.forward_embedding(data, index_t)
+                        z = self.projection_head(embeddings)
+                        loss = self.loss(z, label)
+                    else:
+                        output = self.model(data, index_t)
+                        loss = self.loss(output, label)
                 self.scaler.scale(loss).backward()
                 if self.arg.grad_clip:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.arg.grad_max)
+                    all_params = list(self.model.parameters())
+                    if self.is_supcon:
+                        all_params += list(self.projection_head.parameters())
+                    torch.nn.utils.clip_grad_norm_(all_params, self.arg.grad_max)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                output = self.model(data, index_t)
-                loss = self.loss(output, label)
+                if self.is_supcon:
+                    embeddings = self.model.forward_embedding(data, index_t)
+                    z = self.projection_head(embeddings)
+                    loss = self.loss(z, label)
+                else:
+                    output = self.model(data, index_t)
+                    loss = self.loss(output, label)
                 loss.backward()
                 if self.arg.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.arg.grad_max)
+                    all_params = list(self.model.parameters())
+                    if self.is_supcon:
+                        all_params += list(self.projection_head.parameters())
+                    torch.nn.utils.clip_grad_norm_(all_params, self.arg.grad_max)
                 self.optimizer.step()
 
             loss_value.append(loss.data.item())
             timer["model"] += self.split_time()
 
-            value, predict_label = torch.max(output.data, 1)
-            acc = torch.mean((predict_label == label.data).float())
-            acc_value.append(acc.data.item())
-            self.train_writer.add_scalar("acc", acc, self.global_step)
+            if self.is_supcon:
+                # No classification accuracy for SupCon — log loss only
+                acc_value.append(0.0)
+                self.train_writer.add_scalar("supcon_loss", loss.data.item(), self.global_step)
+            else:
+                value, predict_label = torch.max(output.data, 1)
+                acc = torch.mean((predict_label == label.data).float())
+                acc_value.append(acc.data.item())
+                self.train_writer.add_scalar("acc", acc, self.global_step)
             self.train_writer.add_scalar("loss", loss.data.item(), self.global_step)
 
             # statistics
@@ -639,9 +728,29 @@ class Processor:
         proportion = {
             k: f"{int(round(v * 100 / sum(timer.values()))):02d}%" for k, v in timer.items()
         }
-        self.print_log(
-            f"\tMean training loss: {np.mean(loss_value):.4f}.  Mean training acc: {np.mean(acc_value) * 100:.2f}%."
-        )
+        if self.is_supcon:
+            self.print_log(f"\tMean SupCon loss: {np.mean(loss_value):.4f}.")
+            # Log embedding quality metrics periodically
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                try:
+                    import sys as _sys
+                    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+                    from shared.metrics.embedding_quality import compute_all_metrics
+                    with torch.no_grad():
+                        metrics = compute_all_metrics(z.detach().float(), label)
+                    for k, v in metrics.items():
+                        self.train_writer.add_scalar(f"embed/{k}", v, self.global_step)
+                    self.print_log(
+                        f"\tAlignment: {metrics['alignment']:.4f}  "
+                        f"Uniformity: {metrics['uniformity']:.4f}  "
+                        f"EffRank: {metrics['effective_rank']:.1f}"
+                    )
+                except Exception as e:
+                    self.print_log(f"\tEmbedding metrics failed: {e}")
+        else:
+            self.print_log(
+                f"\tMean training loss: {np.mean(loss_value):.4f}.  Mean training acc: {np.mean(acc_value) * 100:.2f}%."
+            )
         self.print_log(f"\tLearning Rate: {self.lr:.4f}")
         self.print_log(
             "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(**proportion)
@@ -666,7 +775,13 @@ class Processor:
                 "early_stopping_best_acc": self.early_stopping_best_acc,
                 "early_stopping_wait": self.early_stopping_wait,
                 "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+                "loss_type": self.arg.loss_type,
             }
+            if self.is_supcon and hasattr(self, "projection_head"):
+                proj_state = OrderedDict(
+                    [[k, v.cpu()] for k, v in self.projection_head.state_dict().items()]
+                )
+                checkpoint["projection_head_state_dict"] = proj_state
 
             checkpoint_path = (
                 self.arg.model_saved_name

@@ -1,0 +1,96 @@
+seed: 1
+num_worker: 2
+work_dir: ./work_dir/kinetics/coco/SkateFormer_b_supcon/
+
+phase: train
+
+# feeder
+feeder: feeders.feeder_kinetics_coco.Feeder
+train_feeder_args:
+  data_path: /app/converted/kinetics-skeleton
+  split: train
+  data_type: b
+  debug: False
+  window_size: 64
+  p_interval: [0.5, 1]
+  aug_method: a123489p
+  intra_p: 0.5
+  inter_p: 0.0
+  thres: 64
+  uniform: True
+  partition: False
+  max_shards: 5
+  lazy_load: True
+
+test_feeder_args:
+  data_path: /app/converted/kinetics-skeleton
+  split: test
+  data_type: b
+  window_size: 64
+  p_interval: [0.95]
+  thres: 64
+  uniform: True
+  partition: False
+  debug: False
+
+# model (same architecture, SupCon replaces classification head at training time)
+model: model.SkateFormer.SkateFormer_
+model_args:
+  num_classes: 400  # needed for model init; FC head unused in SupCon
+  num_people: 2
+  num_points: 17
+  kernel_size: 7
+  num_heads: 32
+  attn_drop: 0.5
+  head_drop: 0.0
+  rel: True
+  drop_path: 0.2
+  type_1_size: [8, 17]
+  type_2_size: [8, 17]
+  type_3_size: [8, 17]
+  type_4_size: [8, 17]
+  mlp_ratio: 4.0
+  index_t: True
+
+# SupCon loss config
+loss_type: SupCon
+supcon_temperature: 0.07
+supcon_hidden_dim: 512
+supcon_out_dim: 128
+
+# Fine-tune from CE-pretrained checkpoint
+# Set weights to pretrained checkpoint path for fine-tune mode
+# Leave empty/null for fresh training from scratch
+weights: ./work_dir/kinetics/coco/SkateFormer_b_cloud/checkpoint_best.pt
+ignore_weights: [head]  # skip classification head weights
+
+# Freeze/unfreeze schedule (for fine-tune mode, set to 0 for fresh)
+supcon_freeze_blocks: 4
+supcon_unfreeze_epoch: 30
+
+# optim (lower LR for fine-tune; use 2e-4 for fresh)
+optimizer: AdamW
+weight_decay: 1e-4
+lr_scheduler: cosine
+base_lr: 1e-4
+min_lr: 1e-6
+warmup_lr: 1e-7
+warmup_prefix: False
+warm_up_epoch: 5
+
+# training
+device: [0]
+batch_size: 64  # SupCon benefits from larger batches; increase if VRAM allows
+test_batch_size: 64
+num_epoch: 50   # 50 for fine-tune, 100 for fresh
+nesterov: True
+grad_clip: True
+grad_max: 1.0
+
+# model saving
+save_interval: 5
+save_epoch: 1
+
+# performance
+amp_enabled: True
+compile_model: False

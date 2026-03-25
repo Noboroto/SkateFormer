@@ -607,6 +607,27 @@ class SkateFormer(nn.Module):
             input = self.dropout(input)
         return input if pre_logits else self.head(input)
 
+    def forward_embedding(self, input, index_t):
+        """Full forward pass returning (B, channels[-1]) embeddings before FC head."""
+        B, C, T, V, M = input.shape
+
+        output = input.permute(0, 1, 2, 4, 3).contiguous().view(B, C, T, -1)
+        for layer in self.stem:
+            output = layer(output)
+        if self.index_t:
+            te = torch.zeros(B, T, self.embed_dim).to(output.device)
+            div_term = torch.exp(
+                    torch.arange(0, self.embed_dim, 2, dtype=torch.float)
+                    * -(math.log(10000.0) / self.embed_dim)
+            ).to(output.device)
+            te[:, :, 0::2] = torch.sin(index_t.unsqueeze(-1).float() * div_term)
+            te[:, :, 1::2] = torch.cos(index_t.unsqueeze(-1).float() * div_term)
+            output = output + torch.einsum("b t c, c v -> b c t v", te, self.joint_person_embedding)
+        else:
+            output = output + self.joint_person_temporal_embedding
+        output = self.forward_features(output)
+        return self.forward_head(output, pre_logits=True)  # (B, channels[-1])
+
     def forward(self, input, index_t):
         B, C, T, V, M = input.shape
 
@@ -616,10 +637,10 @@ class SkateFormer(nn.Module):
         if self.index_t:
             te = torch.zeros(B, T, self.embed_dim).to(output.device)  # B, T, C
             div_term = torch.exp(
-                
+
                     torch.arange(0, self.embed_dim, 2, dtype=torch.float)
                     * -(math.log(10000.0) / self.embed_dim)
-                
+
             ).to(output.device)
             te[:, :, 0::2] = torch.sin(index_t.unsqueeze(-1).float() * div_term)
             te[:, :, 1::2] = torch.cos(index_t.unsqueeze(-1).float() * div_term)
