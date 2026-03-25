@@ -426,9 +426,9 @@ class Feeder(Dataset):
                 if self.partition and ("p" in self.aug_method):
                     data_numpy = drop_part(data_numpy, p=0.5)
 
-                if "a" in self.aug_method and np.random.rand(1) < 0.5:
+                if "a" in self.aug_method and data_numpy.shape[3] > 1 and np.random.rand(1) < 0.5:
                     data_numpy = data_numpy[:, :, :, np.array([1, 0])]
-                if "b" in self.aug_method and num_people_present == 2 and np.random.rand(1) < 0.5:
+                if "b" in self.aug_method and num_people_present == 2 and data_numpy.shape[3] > 1 and np.random.rand(1) < 0.5:
                     axis_next = np.random.randint(0, 1)
                     temp = data_numpy.copy()
                     C, T, V, _ = data_numpy.shape
