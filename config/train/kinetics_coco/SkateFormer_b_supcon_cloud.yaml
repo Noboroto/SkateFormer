@@ -78,7 +78,7 @@ warm_up_epoch: 5
 device: [0]
 batch_size: 128
 test_batch_size: 128
-num_epoch: 50
+num_epoch: 200
 nesterov: True
 grad_clip: True
 grad_max: 1.0
