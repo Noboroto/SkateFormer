@@ -7,7 +7,7 @@ phase: train
 # feeder — MMAction2/PYSKL pkl format (cloud /data/)
 feeder: feeders.feeder_kinetics_coco.Feeder
 train_feeder_args:
-  data_path: /data/k400_2d.pkl
+  data_path: /data/k400_2d.pkl/k400_2d.pkl
   split: train
   data_type: b
   debug: False
@@ -21,7 +21,7 @@ train_feeder_args:
   partition: False
 
 test_feeder_args:
-  data_path: /data/k400_2d.pkl
+  data_path: /data/k400_2d.pkl/k400_2d.pkl
   split: val
   data_type: b
   window_size: 64
