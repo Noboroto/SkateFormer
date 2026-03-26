@@ -1,0 +1,99 @@
+seed: 42
+num_worker: 4
+work_dir: ./work_dir/kinetics/coco/SkateFormer_j_supcon/
+
+phase: train
+
+# feeder — MMAction2/PYSKL pkl format (cloud /data/)
+feeder: feeders.feeder_kinetics_coco.Feeder
+train_feeder_args:
+  data_path: /data/k400_2d.pkl/k400_2d.pkl
+  keypoint_path: /data/k400_kpfiles_2d
+  split: train
+  data_type: j
+  debug: False
+  window_size: 64
+  p_interval: [0.5, 1]
+  aug_method: a123489p
+  intra_p: 0.5
+  inter_p: 0.0
+  thres: 64
+  uniform: True
+  partition: False
+
+test_feeder_args:
+  data_path: /data/k400_2d.pkl/k400_2d.pkl
+  keypoint_path: /data/k400_kpfiles_2d
+  split: val
+  data_type: j
+  window_size: 64
+  p_interval: [0.95]
+  thres: 64
+  uniform: True
+  partition: False
+  debug: False
+
+# model
+model: model.SkateFormer.SkateFormer_
+model_args:
+  num_classes: 400
+  num_people: 2
+  num_points: 17
+  kernel_size: 7
+  num_heads: 32
+  attn_drop: 0.5
+  head_drop: 0.0
+  rel: True
+  drop_path: 0.2
+  type_1_size: [8, 17]
+  type_2_size: [8, 17]
+  type_3_size: [8, 17]
+  type_4_size: [8, 17]
+  mlp_ratio: 4.0
+  index_t: True
+
+# SupCon
+loss_type: SupCon
+supcon_temperature: 0.07
+supcon_hidden_dim: 512
+supcon_out_dim: 128
+
+# Fine-tune from CE-pretrained
+weights: ../work_dir/kinetics/coco/SkateFormer_j_cloud/checkpoint_best.pt
+ignore_weights: [head]
+
+# Freeze first 4 stages, unfreeze at epoch 30
+supcon_freeze_blocks: 4
+supcon_unfreeze_epoch: 30
+
+# optim
+optimizer: AdamW
+weight_decay: 1e-4
+lr_scheduler: cosine
+base_lr: 1e-4
+min_lr: 1e-6
+warmup_lr: 1e-7
+warmup_prefix: False
+warm_up_epoch: 5
+
+# training — RTX 5090 32GB: batch 128 should fit with AMP
+device: [0]
+batch_size: 128
+test_batch_size: 128
+num_epoch: 200
+nesterov: True
+grad_clip: True
+grad_max: 1.0
+
+# model saving
+save_interval: 5
+save_epoch: 1
+
+# early stopping (SupCon: based on val loss, patience = 10 evals × 5 epochs = 50 epochs)
+early_stopping_enabled: True
+early_stopping_patience: 10
+early_stopping_min_delta: 0.1
+
+# performance
+amp_enabled: True
+compile_model: False
