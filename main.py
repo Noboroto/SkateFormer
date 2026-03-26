@@ -822,6 +822,25 @@ class Processor:
             torch.save(checkpoint, latest_checkpoint_path)
             self.print_log(f"Saved checkpoint to {checkpoint_path}")
 
+            # Keep only 5 latest numbered checkpoints + checkpoint_best + checkpoint_latest
+            self._cleanup_old_checkpoints(keep=5)
+
+    def _cleanup_old_checkpoints(self, keep=5):
+        """Delete old numbered checkpoints, keeping only the N most recent + best + latest."""
+        import glob as _glob
+        work_dir = self.arg.work_dir
+        protected = {"checkpoint_best.pt", "checkpoint_latest.pt"}
+        all_ckpts = sorted(
+            _glob.glob(os.path.join(work_dir, "*.pt")),
+            key=os.path.getmtime,
+        )
+        # Filter to only numbered checkpoints (not best/latest)
+        numbered = [p for p in all_ckpts if os.path.basename(p) not in protected]
+        to_delete = numbered[:-keep] if len(numbered) > keep else []
+        for p in to_delete:
+            os.remove(p)
+            self.print_log(f"  Removed old checkpoint: {os.path.basename(p)}")
+
     def eval(self, epoch, save_score=False, loader_name=["test"], wrong_file=None, result_file=None):
         if self.is_supcon:
             return self._eval_supcon(epoch, loader_name=loader_name)
