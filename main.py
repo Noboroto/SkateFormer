@@ -299,6 +299,7 @@ class Processor:
         self.early_stopping_best_acc = 0
         self.early_stopping_wait = 0
         self.should_stop_early = False
+        self.best_supcon_loss = float("inf")
         self.model = self.model.cuda(self.output_device)
 
         if type(self.arg.device) is list:
@@ -535,7 +536,11 @@ class Processor:
         )
 
     def update_early_stopping(self, epoch: int, accuracy: float, loss: float, loader_name: str) -> bool:
-        """Track significant Top-1 improvements and stop after patience runs out."""
+        """Track significant improvements and stop after patience runs out.
+
+        For CE: tracks Top-1 accuracy (higher = better).
+        For SupCon: tracks validation loss (lower = better).
+        """
         if (
             not self.arg.early_stopping_enabled
             or self.arg.phase != "train"
@@ -543,25 +548,45 @@ class Processor:
         ):
             return False
 
-        min_delta = self.arg.early_stopping_min_delta / 100.0
-        if accuracy > self.early_stopping_best_acc + min_delta:
-            self.early_stopping_best_acc = accuracy
-            self.early_stopping_wait = 0
-            self.print_log(
-                "[Early Stopping] Significant Top-1 improvement to "
-                f"{accuracy * 100:.2f}% (loss={loss:.4f}); patience reset"
-            )
-            return False
+        if self.is_supcon:
+            # Loss-based early stopping for SupCon
+            min_delta = self.arg.early_stopping_min_delta / 100.0
+            if loss < self.best_supcon_loss - min_delta:
+                self.best_supcon_loss = loss
+                self.early_stopping_wait = 0
+                self.print_log(
+                    f"[Early Stopping] SupCon loss improved to {loss:.4f}; patience reset"
+                )
+                return False
 
-        self.early_stopping_wait += 1
-        remaining = self.arg.early_stopping_patience - self.early_stopping_wait
-        self.print_log(
-            "[Early Stopping] No significant Top-1 improvement "
-            f"(best={self.early_stopping_best_acc * 100:.2f}%, current={accuracy * 100:.2f}%, "
-            f"min_delta={self.arg.early_stopping_min_delta:.2f} pts). "
-            f"Patience {self.early_stopping_wait}/{self.arg.early_stopping_patience}"
-        )
-        if remaining <= 0:
+            self.early_stopping_wait += 1
+            self.print_log(
+                f"[Early Stopping] No SupCon loss improvement "
+                f"(best={self.best_supcon_loss:.4f}, current={loss:.4f}, "
+                f"min_delta={self.arg.early_stopping_min_delta:.2f}). "
+                f"Patience {self.early_stopping_wait}/{self.arg.early_stopping_patience}"
+            )
+        else:
+            # Accuracy-based early stopping for CE
+            min_delta = self.arg.early_stopping_min_delta / 100.0
+            if accuracy > self.early_stopping_best_acc + min_delta:
+                self.early_stopping_best_acc = accuracy
+                self.early_stopping_wait = 0
+                self.print_log(
+                    "[Early Stopping] Significant Top-1 improvement to "
+                    f"{accuracy * 100:.2f}% (loss={loss:.4f}); patience reset"
+                )
+                return False
+
+            self.early_stopping_wait += 1
+            self.print_log(
+                "[Early Stopping] No significant Top-1 improvement "
+                f"(best={self.early_stopping_best_acc * 100:.2f}%, current={accuracy * 100:.2f}%, "
+                f"min_delta={self.arg.early_stopping_min_delta:.2f} pts). "
+                f"Patience {self.early_stopping_wait}/{self.arg.early_stopping_patience}"
+            )
+
+        if self.early_stopping_wait >= self.arg.early_stopping_patience:
             self.print_log(
                 f"[Early Stopping] Triggered at epoch {epoch + 1} after "
                 f"{self.arg.early_stopping_patience} evals without significant improvement"
@@ -798,6 +823,82 @@ class Processor:
             self.print_log(f"Saved checkpoint to {checkpoint_path}")
 
     def eval(self, epoch, save_score=False, loader_name=["test"], wrong_file=None, result_file=None):
+        if self.is_supcon:
+            return self._eval_supcon(epoch, loader_name=loader_name)
+        return self._eval_ce(epoch, save_score=save_score, loader_name=loader_name,
+                             wrong_file=wrong_file, result_file=result_file)
+
+    def _eval_supcon(self, epoch, loader_name=["test"]):
+        """Evaluate SupCon: compute val loss + embedding metrics."""
+        metrics = {}
+        self.model.eval()
+        if hasattr(self, "projection_head"):
+            self.projection_head.eval()
+        self.print_log(f"Eval epoch: {epoch + 1}")
+
+        for ln in loader_name:
+            loss_value = []
+            process = tqdm(
+                self.data_loader[ln], file=sys.stdout, dynamic_ncols=True, mininterval=1.0
+            )
+            for batch_idx, (data, index_t, label, index) in enumerate(process):
+                with torch.no_grad():
+                    data = data.float().cuda(self.output_device, non_blocking=True)
+                    index_t = index_t.float().cuda(self.output_device, non_blocking=True)
+                    label = label.long().cuda(self.output_device, non_blocking=True)
+                    if self.arg.amp_enabled:
+                        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                            embeddings = self.model.forward_embedding(data, index_t)
+                            z = self.projection_head(embeddings)
+                            loss = self.loss(z, label)
+                    else:
+                        embeddings = self.model.forward_embedding(data, index_t)
+                        z = self.projection_head(embeddings)
+                        loss = self.loss(z, label)
+                    loss_value.append(loss.data.item())
+
+            val_loss = float(np.mean(loss_value))
+            self.print_log(
+                f"\tMean {ln} SupCon loss of {len(self.data_loader[ln])} batches: {val_loss:.4f}"
+            )
+
+            if self.arg.phase == "train":
+                self.val_writer.add_scalar("supcon_loss", val_loss, self.global_step)
+
+            # Save best checkpoint based on lowest val loss
+            if val_loss < self.best_supcon_loss:
+                self.best_supcon_loss = val_loss
+                self.best_acc_epoch = epoch + 1  # reuse for checkpoint naming
+
+                if self.arg.phase == "train":
+                    state_dict = self.model.state_dict()
+                    weights = OrderedDict(
+                        [[k.removeprefix("module.").removeprefix("_orig_mod."), v.cpu()] for k, v in state_dict.items()]
+                    )
+                    checkpoint = {
+                        "epoch": epoch + 1,
+                        "global_step": int(self.global_step),
+                        "model_state_dict": weights,
+                        "best_supcon_loss": self.best_supcon_loss,
+                        "loss_type": "SupCon",
+                        "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+                    }
+                    if hasattr(self, "projection_head"):
+                        proj_state = OrderedDict(
+                            [[k, v.cpu()] for k, v in self.projection_head.state_dict().items()]
+                        )
+                        checkpoint["projection_head_state_dict"] = proj_state
+                    best_path = os.path.join(self.arg.work_dir, "checkpoint_best.pt")
+                    torch.save(checkpoint, best_path)
+                    self.print_log(f"New best SupCon loss: {val_loss:.4f}, saved to {best_path}")
+
+            metrics[ln] = {"loss": val_loss, "accuracy": 0.0}
+            self.update_early_stopping(epoch, accuracy=0.0, loss=val_loss, loader_name=ln)
+
+        return metrics
+
+    def _eval_ce(self, epoch, save_score=False, loader_name=["test"], wrong_file=None, result_file=None):
+        """Original CE evaluation with accuracy tracking."""
         metrics = {}
         if wrong_file is not None:
             f_w = open(wrong_file, "w")

@@ -89,6 +89,11 @@ grad_max: 1.0
 save_interval: 5
 save_epoch: 1
 
+# early stopping
+early_stopping_enabled: True
+early_stopping_patience: 10
+early_stopping_min_delta: 0.1
+
 # performance
 amp_enabled: True
 compile_model: False

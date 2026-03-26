@@ -89,6 +89,11 @@ grad_max: 1.0
 save_interval: 5
 save_epoch: 1
 
+# early stopping (SupCon: based on val loss, patience = 10 evals × 5 epochs = 50 epochs)
+early_stopping_enabled: True
+early_stopping_patience: 10
+early_stopping_min_delta: 0.1
+
 # performance
 amp_enabled: True
 compile_model: False
